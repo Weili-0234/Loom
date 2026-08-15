@@ -5318,13 +5318,17 @@ function renderClaudeInfo(meta, claude, statuses) {
       const item = document.createElement('button');
       item.type = 'button';
       const status = child.status || '';
-      item.className = 'session-subagent' + (status ? ` session-subagent--${status}` : '');
+      const activity = child.activity || '';
+      // "waiting" is its own look: the agent is alive but between events —
+      // ready, not consuming. Solid pulse means actually doing something.
+      const look = status === 'working' && activity === 'waiting' ? 'waiting' : status;
+      item.className = 'session-subagent' + (look ? ` session-subagent--${look}` : '');
       const dot = document.createElement('span');
       dot.className = 'session-subagent__dot';
       item.appendChild(dot);
       const title = child.title || child.agent_type || shortSessionId(child.id);
       const when = child.mtime ? formatSessionMtime(child.mtime) : '';
-      const statusLabel = status === 'working' ? 'working' : status;
+      const statusLabel = status === 'working' ? (activity || 'working') : status;
       const queued = child.queued ? `✉ ${child.queued} queued` : '';
       item.appendChild(document.createTextNode(
         [title, statusLabel, queued, when].filter(Boolean).join(' · '),
@@ -5652,7 +5656,7 @@ function renderConversationMessages(payload) {
         jump.className = 'conv-msg__subagent-link';
         const label = sub.agent_type || 'subagent';
         const bits = [`View ${label} trajectory`];
-        if (sub.status === 'working') bits.push('working');
+        if (sub.status === 'working') bits.push(sub.activity || 'working');
         if (sub.queued) bits.push(`✉ ${sub.queued} queued`);
         jump.textContent = `${bits.join(' · ')} →`;
         if (sub.title) jump.title = sub.title;

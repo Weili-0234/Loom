@@ -1962,6 +1962,11 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
 }
 .session-subagent--completed .session-subagent__dot { background: #22c55e; }
 .session-subagent--error .session-subagent__dot { background: #ef4444; }
+/* Ready-and-waiting: alive between events, not consuming — hollow, no pulse. */
+.session-subagent--waiting .session-subagent__dot {
+  background: transparent;
+  border: 1.5px solid var(--accent);
+}
 @keyframes subagent-pulse { 50% { opacity: 0.3; } }
 .conv-msg__subagent-link {
   display: inline-block;

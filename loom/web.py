@@ -5716,6 +5716,29 @@ def make_handler(
                         child["status"] = "working"
                     else:
                         child["status"] = "idle"
+                    # What "working" is, concretely, from the transcript's
+                    # last row: a tool without its result is running; a
+                    # finished tool means the model is composing its next
+                    # turn (nothing lands on disk mid-generation); trailing
+                    # assistant text means the turn ended and an event-driven
+                    # agent is waiting for its next wake-up.
+                    if child["status"] == "working" and child.get("path"):
+                        child_messages = _parse_conversation_transcript(
+                            Path(str(child["path"])), agent, skip_sidechain=False
+                        )
+                        last = child_messages[-1] if child_messages else None
+                        if last is None:
+                            child["activity"] = ""
+                        elif last.get("kind") == "tool":
+                            last_tool = last.get("tool") or {}
+                            if last_tool.get("status") == "running":
+                                child["activity"] = f"running {last_tool.get('name') or 'tool'}"
+                            else:
+                                child["activity"] = "thinking"
+                        elif last.get("kind") == "assistant":
+                            child["activity"] = "waiting"
+                        else:
+                            child["activity"] = "thinking"
                     # Sends addressed to this child (by spawn name, agent id,
                     # or session id) that have not landed in its transcript
                     # are still queued — the child was mid-turn when sent.
@@ -6662,6 +6685,7 @@ def make_handler(
                         "agent_type": str(child.get("agent_type") or ""),
                         "title": str(child.get("title") or ""),
                         "status": str(child.get("status") or ""),
+                        "activity": str(child.get("activity") or ""),
                         "queued": int(child.get("queued") or 0),
                     }
                     for link_key in (
