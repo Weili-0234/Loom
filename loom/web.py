@@ -452,6 +452,41 @@ def _conversation_user_text(text: str) -> str:
     return _conversation_clip(value, 24000)
 
 
+_AGENT_MESSAGE_RE = re.compile(
+    r'<agent-message\b[^>]*\bfrom="([^"]+)"[^>]*>\s*(.*?)\s*(?:</agent-message>|\Z)',
+    re.DOTALL,
+)
+_NOTIFICATION_SUMMARY_RE = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
+
+
+def _classify_user_message(text: str) -> dict[str, Any] | None:
+    """Not everything in a user turn is the user.
+
+    The harness injects other things there too: mail from another agent
+    (``<agent-message from="…">``) and background-task events (the
+    ``[SYSTEM NOTIFICATION]`` preamble wrapping a ``<task-notification>``).
+    Telling them apart lets the UI stop painting a monitor snapshot as
+    something the human typed. None means a genuine user prompt.
+    """
+    head = text[:600].lstrip()
+    if "<task-notification>" in text or head.startswith("[SYSTEM NOTIFICATION"):
+        summary_match = _NOTIFICATION_SUMMARY_RE.search(text)
+        summary = " ".join(summary_match.group(1).split()) if summary_match else ""
+        return {
+            "origin": "system",
+            "label": "Task notification",
+            "summary": _conversation_clip(summary, 300),
+        }
+    agent_match = _AGENT_MESSAGE_RE.search(text)
+    if agent_match:
+        return {
+            "origin": "agent",
+            "from": agent_match.group(1).strip(),
+            "body": agent_match.group(2),
+        }
+    return None
+
+
 def _conversation_timestamp(value: Any) -> int | None:
     if isinstance(value, (int, float)):
         return int(value * 1000 if value < 10_000_000_000 else value)
@@ -892,20 +927,32 @@ def _parse_conversation_transcript(
         )
         if not normalized:
             return
-        if kind == "user":
+        injected = _classify_user_message(normalized) if kind == "user" else None
+        if kind == "user" and injected is None:
+            # Only a genuine human reply resolves a pending question — an
+            # agent's mail or a monitor event landing in the user turn is not
+            # the user answering.
             for question_message in question_messages:
                 question = question_message.get("question") or {}
                 if question.get("status") == "pending":
                     question["status"] = "answered"
                     question["answer"] = normalized
-        messages.append(
-            {
-                "id": f"{session_id}:{line_number}:{index}",
-                "kind": kind,
-                "text": normalized,
-                "created_at": created_at,
-            }
-        )
+        message: dict[str, Any] = {
+            "id": f"{session_id}:{line_number}:{index}",
+            "kind": kind,
+            "text": normalized,
+            "created_at": created_at,
+        }
+        if injected is not None:
+            message["origin"] = injected["origin"]
+            if injected["origin"] == "agent":
+                message["from"] = injected["from"]
+                # The wrapper is plumbing; the message is what matters.
+                message["text"] = _conversation_clip(injected["body"], 24000)
+            else:
+                message["label"] = injected.get("label") or ""
+                message["summary"] = injected.get("summary") or ""
+        messages.append(message)
 
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:

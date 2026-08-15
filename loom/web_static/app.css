@@ -1967,6 +1967,21 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   background: transparent;
   border: 1.5px solid var(--accent);
 }
+/* Mail from another agent: an incoming card, not the user's own bubble. */
+.conv-msg--origin-agent {
+  border-left: 3px solid #6f8c74;
+  background: rgba(111, 140, 116, 0.08);
+}
+.conv-msg--origin-agent .conv-msg__who { color: #6f8c74; }
+/* A background event: one folded line until you ask for the payload. */
+.conv-msg--origin-system { opacity: 0.85; }
+.conv-notification > summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  user-select: none;
+}
+.conv-notification > summary:hover { color: var(--text); }
 /* The tool call itself, shown before its output. */
 .conv-msg__cmd {
   border-left: 3px solid var(--accent);

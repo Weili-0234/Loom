@@ -368,3 +368,35 @@ def test_claude_sendmessage_and_spawn_name_are_captured(tmp_path) -> None:
     assert tools["Agent"]["agent_name"] == "fleet-watch"
     assert tools["SendMessage"]["message_to"] == "fleet-watch"
     assert tools["SendMessage"]["message_text"] == "scale down now"
+
+
+def test_injected_user_turns_are_classified(tmp_path) -> None:
+    notification = (
+        "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+        "This is an automated background-task event, NOT a message from the user.\n"
+        "<task-notification>\n<task-id>abc</task-id>\n"
+        "<summary>Monitor event: pods, ladder state</summary>\n"
+        "<event>SNAPSHOT ...</event>\n</task-notification>"
+    )
+    agent_mail = (
+        "Another Claude session sent a message:\n"
+        '<agent-message from="semantic-exp-watch">\n'
+        "Cache dipped to 62.7% this cycle.\n"
+        "</agent-message>"
+    )
+    transcript = tmp_path / "parent.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {"type": "user", "message": {"content": [{"type": "text", "text": notification}]}},
+            {"type": "user", "message": {"content": [{"type": "text", "text": agent_mail}]}},
+            {"type": "user", "message": {"content": [{"type": "text", "text": "a real human prompt"}]}},
+        ],
+    )
+    messages = _parse_conversation_transcript(transcript, "claude")
+    assert [m.get("origin") for m in messages] == ["system", "agent", None]
+    assert messages[0]["label"] == "Task notification"
+    assert messages[0]["summary"] == "Monitor event: pods, ladder state"
+    assert messages[1]["from"] == "semantic-exp-watch"
+    assert messages[1]["text"] == "Cache dipped to 62.7% this cycle."
+    assert messages[2]["text"] == "a real human prompt"

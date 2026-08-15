@@ -5639,10 +5639,29 @@ function renderConversationMessages(payload) {
   messages.forEach((msg) => {
     const el = document.createElement('article');
     const kind = msg.kind || 'assistant';
-    el.className = `conv-msg conv-msg--${kind}`;
+    const origin = kind === 'user' ? (msg.origin || 'user') : '';
+    el.className = `conv-msg conv-msg--${kind}`
+      + (origin && origin !== 'user' ? ` conv-msg--origin-${origin}` : '');
+    // A system notification renders as a folded event line, not a bubble.
+    if (origin === 'system') {
+      const det = document.createElement('details');
+      det.className = 'conv-notification';
+      const sum = document.createElement('summary');
+      sum.textContent = `⚙ ${msg.label || 'Notification'}${msg.summary ? ` · ${msg.summary}` : ''}`;
+      det.appendChild(sum);
+      const pre = document.createElement('pre');
+      pre.className = 'conv-msg__pre';
+      pre.textContent = msg.text || '';
+      det.appendChild(pre);
+      el.appendChild(det);
+      log.appendChild(el);
+      return;
+    }
     const who = document.createElement('div');
     who.className = 'conv-msg__who';
-    who.textContent = kind === 'user' ? 'You' : kind === 'tool' ? (msg.tool && msg.tool.name) || 'Tool' : kind === 'question' ? 'Question' : 'Agent';
+    who.textContent = origin === 'agent'
+      ? `✉ from ${msg.from || 'another agent'}`
+      : kind === 'user' ? 'You' : kind === 'tool' ? (msg.tool && msg.tool.name) || 'Tool' : kind === 'question' ? 'Question' : 'Agent';
     el.appendChild(who);
     if (kind === 'tool' && msg.tool) {
       const summary = document.createElement('div');
