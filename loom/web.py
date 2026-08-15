@@ -843,6 +843,20 @@ def _conversation_transcript_path(
     return None
 
 
+def _transcript_tail_text(path_str: str, limit: int = 262144) -> str:
+    """The raw tail of a transcript, for cheap "has this text landed yet"
+    checks — a delivered message appears JSON-escaped in the child's file."""
+    try:
+        p = Path(path_str)
+        size = p.stat().st_size
+        with p.open("rb") as handle:
+            if size > limit:
+                handle.seek(size - limit)
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _parse_conversation_transcript(
     path: Path, agent: str, *, skip_sidechain: bool = False
 ) -> list[dict[str, Any]]:
@@ -968,6 +982,22 @@ def _parse_conversation_transcript(
                                 "external_id": external_id,
                             },
                         }
+                        if isinstance(payload, dict):
+                            # Spawns carry the child's addressable name; sends
+                            # carry addressee + text. Kept structured so the
+                            # sessions API can tell which sends to a subagent
+                            # are still queued (not yet in its transcript).
+                            if name in ("Task", "Agent", "TaskCreate"):
+                                spawn_name = str(payload.get("name") or "").strip()
+                                if spawn_name:
+                                    tool_message["tool"]["agent_name"] = spawn_name
+                            elif name == "SendMessage":
+                                send_to = str(payload.get("to") or "").strip()
+                                if send_to:
+                                    tool_message["tool"]["message_to"] = send_to
+                                    tool_message["tool"]["message_text"] = _conversation_clip(
+                                        str(payload.get("message") or ""), 2000
+                                    )
                         messages.append(tool_message)
                         tools_by_external_id[external_id] = tool_message
                         if agent == AGENT_CURSOR:
@@ -5627,6 +5657,87 @@ def make_handler(
                 kids = list(parent.get("subagents") or [])
                 kids.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
                 parent["subagents"] = kids
+                if not kids:
+                    continue
+                # Working vs finished, per child. The parent transcript is
+                # authoritative: its Task tool_use has a result exactly when
+                # the subagent is done. A tool still "running" (or an
+                # unmatched child) counts as working only while its
+                # transcript is actually growing — a subagent whose parent
+                # died stops writing and settles to idle.
+                status_by_key: dict[str, str] = {}
+                name_by_key: dict[str, str] = {}
+                sends: list[dict[str, Any]] = []
+                parent_path = str(parent.get("path") or "")
+                if parent_path:
+                    for entry in _parse_conversation_transcript(
+                        Path(parent_path), agent, skip_sidechain=True
+                    ):
+                        tool = entry.get("tool") if entry.get("kind") == "tool" else None
+                        if not isinstance(tool, dict):
+                            continue
+                        if tool.get("message_to"):
+                            sends.append(
+                                {
+                                    "to": str(tool.get("message_to") or ""),
+                                    "text": str(tool.get("message_text") or ""),
+                                    "created_at": entry.get("created_at"),
+                                }
+                            )
+                            continue
+                        for link_key in (
+                            str(tool.get("external_id") or ""),
+                            str(tool.get("agent_id") or ""),
+                        ):
+                            if link_key:
+                                status_by_key[link_key] = str(tool.get("status") or "")
+                                spawn_name = str(tool.get("agent_name") or "")
+                                if spawn_name:
+                                    name_by_key[link_key] = spawn_name
+                now = time.time()
+                for child in kids:
+                    child_keys = (
+                        str(child.get("tool_use_id") or ""),
+                        str(child.get("agent_id") or ""),
+                    )
+                    status = next(
+                        (status_by_key[k] for k in child_keys if k in status_by_key), ""
+                    )
+                    fresh = now - float(child.get("mtime") or 0.0) < 180
+                    if status in ("completed", "error", "canceled"):
+                        child["status"] = status
+                    elif fresh:
+                        child["status"] = "working"
+                    else:
+                        child["status"] = "idle"
+                    # Sends addressed to this child (by spawn name, agent id,
+                    # or session id) that have not landed in its transcript
+                    # are still queued — the child was mid-turn when sent.
+                    idents = {k for k in child_keys if k}
+                    idents.add(str(child.get("id") or ""))
+                    spawn_name = next(
+                        (name_by_key[k] for k in child_keys if k in name_by_key), ""
+                    )
+                    if spawn_name:
+                        idents.add(spawn_name)
+                    addressed = [s for s in sends if s["to"] in idents]
+                    queued: list[dict[str, Any]] = []
+                    if addressed:
+                        tail = _transcript_tail_text(str(child.get("path") or ""))
+                        for send in addressed:
+                            fragment = send["text"][:80]
+                            if not fragment:
+                                continue
+                            encoded = json.dumps(fragment)[1:-1]
+                            if encoded and encoded not in tail:
+                                queued.append(
+                                    {
+                                        "text": send["text"][:400],
+                                        "created_at": send.get("created_at"),
+                                    }
+                                )
+                    child["queued"] = len(queued)
+                    child["queued_messages"] = queued
             parents.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
             live = claude_registry.session_status(
                 project_id, slug, agent, meta.tmux_interview_target or ""
@@ -6528,6 +6639,8 @@ def make_handler(
                         "session_id": child_id,
                         "agent_type": str(child.get("agent_type") or ""),
                         "title": str(child.get("title") or ""),
+                        "status": str(child.get("status") or ""),
+                        "queued": int(child.get("queued") or 0),
                     }
                     for link_key in (
                         str(child.get("tool_use_id") or ""),

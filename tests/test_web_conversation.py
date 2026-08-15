@@ -324,3 +324,47 @@ def test_claude_task_tool_records_linkage_ids(tmp_path) -> None:
     assert tools[0]["external_id"] == "toolu_task_1"
     assert tools[0]["agent_id"] == "abc123def"
     assert tools[0]["status"] == "completed"
+
+
+def test_claude_sendmessage_and_spawn_name_are_captured(tmp_path) -> None:
+    transcript = tmp_path / "parent.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Agent",
+                            "id": "toolu_spawn_1",
+                            "input": {
+                                "description": "Watch the fleet",
+                                "subagent_type": "gpu-capacity-watch",
+                                "name": "fleet-watch",
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "SendMessage",
+                            "id": "toolu_send_1",
+                            "input": {"to": "fleet-watch", "message": "scale down now"},
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    messages = _parse_conversation_transcript(transcript, "claude")
+    tools = {m["tool"]["name"]: m["tool"] for m in messages if m.get("kind") == "tool"}
+    assert tools["Agent"]["agent_name"] == "fleet-watch"
+    assert tools["SendMessage"]["message_to"] == "fleet-watch"
+    assert tools["SendMessage"]["message_text"] == "scale down now"

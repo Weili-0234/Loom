@@ -5317,10 +5317,18 @@ function renderClaudeInfo(meta, claude, statuses) {
     kids.forEach((child) => {
       const item = document.createElement('button');
       item.type = 'button';
-      item.className = 'session-subagent';
+      const status = child.status || '';
+      item.className = 'session-subagent' + (status ? ` session-subagent--${status}` : '');
+      const dot = document.createElement('span');
+      dot.className = 'session-subagent__dot';
+      item.appendChild(dot);
       const title = child.title || child.agent_type || shortSessionId(child.id);
       const when = child.mtime ? formatSessionMtime(child.mtime) : '';
-      item.textContent = [title, when].filter(Boolean).join(' · ');
+      const statusLabel = status === 'working' ? 'working' : status;
+      const queued = child.queued ? `✉ ${child.queued} queued` : '';
+      item.appendChild(document.createTextNode(
+        [title, statusLabel, queued, when].filter(Boolean).join(' · '),
+      ));
       item.title = child.id || '';
       item.addEventListener('click', () => openConversation(child.id, { parentId: session.id }));
       subHost.appendChild(item);
@@ -5608,7 +5616,8 @@ function renderConversationMessages(payload) {
       kids.forEach((child) => {
         const opt = document.createElement('option');
         opt.value = child.id || '';
-        opt.textContent = child.title || child.agent_type || shortSessionId(child.id);
+        const glyph = child.status === 'working' ? '● ' : child.status === 'error' ? '✗ ' : '';
+        opt.textContent = glyph + (child.title || child.agent_type || shortSessionId(child.id));
         subSel.appendChild(opt);
       });
       if (current && [...subSel.options].some((o) => o.value === current)) subSel.value = current;
@@ -5642,7 +5651,10 @@ function renderConversationMessages(payload) {
         jump.type = 'button';
         jump.className = 'conv-msg__subagent-link';
         const label = sub.agent_type || 'subagent';
-        jump.textContent = `View ${label} trajectory →`;
+        const bits = [`View ${label} trajectory`];
+        if (sub.status === 'working') bits.push('working');
+        if (sub.queued) bits.push(`✉ ${sub.queued} queued`);
+        jump.textContent = `${bits.join(' · ')} →`;
         if (sub.title) jump.title = sub.title;
         jump.addEventListener('click', () => openConversation(sub.session_id));
         el.appendChild(jump);
