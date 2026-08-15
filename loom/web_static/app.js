@@ -5256,21 +5256,24 @@ function renderClaudeInfo(meta, claude, statuses) {
     sessHost.appendChild(span);
     return;
   }
-  // Dropdown of sessions (newest first) + a single Resume button on the right,
-  // mirroring the worktree picker. Resuming acts on the selected session.
+  // Dropdown of parent sessions (newest first) + View / Resume.
   const running = claude.agent_running === true;
   const row = document.createElement('div');
   row.className = 'session-picker';
 
   const sel = document.createElement('select');
   sel.className = 'session-select';
-  sel.setAttribute('aria-label', 'Claude session to resume');
+  sel.setAttribute('aria-label', 'Claude session');
   sessions.forEach((s) => {
     const opt = document.createElement('option');
     opt.value = s.id || '';
-    const bits = [shortSessionId(s.id)];
+    const bits = [];
+    if (s.title) bits.push(s.title.length > 42 ? s.title.slice(0, 41) + '…' : s.title);
+    else bits.push(shortSessionId(s.id));
     if (s.mtime) bits.push(formatSessionMtime(s.mtime));
     if (s.size) bits.push(`${Math.max(1, Math.round(s.size / 1024))} KB`);
+    const n = Array.isArray(s.subagents) ? s.subagents.length : 0;
+    if (n) bits.push(`${n} subagent${n === 1 ? '' : 's'}`);
     if (!s.path) bits.push('no transcript');
     opt.textContent = bits.join(' · ');
     opt.title = s.id || '';
@@ -5278,6 +5281,14 @@ function renderClaudeInfo(meta, claude, statuses) {
     sel.appendChild(opt);
   });
   row.appendChild(sel);
+
+  const view = document.createElement('button');
+  view.type = 'button';
+  view.className = 'btn btn--sm session-picker__view';
+  view.textContent = 'View';
+  view.title = 'Read the transcript (including Claude Code subagents)';
+  view.addEventListener('click', () => { if (sel.value) openConversation(sel.value); });
+  row.appendChild(view);
 
   const resume = document.createElement('button');
   resume.type = 'button';
@@ -5291,6 +5302,35 @@ function renderClaudeInfo(meta, claude, statuses) {
   row.appendChild(resume);
 
   sessHost.appendChild(row);
+
+  const selected = sessions.find((s) => s.id === sel.value) || sessions[0];
+  const subHost = document.createElement('div');
+  subHost.className = 'session-subagents';
+  const renderSubs = (session) => {
+    subHost.innerHTML = '';
+    const kids = (session && Array.isArray(session.subagents)) ? session.subagents : [];
+    if (!kids.length) return;
+    const label = document.createElement('div');
+    label.className = 'session-subagents__label';
+    label.textContent = 'Subagents';
+    subHost.appendChild(label);
+    kids.forEach((child) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'session-subagent';
+      const title = child.title || child.agent_type || shortSessionId(child.id);
+      const when = child.mtime ? formatSessionMtime(child.mtime) : '';
+      item.textContent = [title, when].filter(Boolean).join(' · ');
+      item.title = child.id || '';
+      item.addEventListener('click', () => openConversation(child.id, { parentId: session.id }));
+      subHost.appendChild(item);
+    });
+  };
+  sel.addEventListener('change', () => {
+    renderSubs(sessions.find((s) => s.id === sel.value));
+  });
+  renderSubs(selected);
+  sessHost.appendChild(subHost);
 }
 
 // ===== Worktree picker modal =====
@@ -5526,6 +5566,202 @@ async function resumeClaudeSession(sessionId) {
     toast(err.message || 'resume failed', { type: 'error' });
   }
 }
+
+const CONVERSATION = { slug: null, sessionId: null, timer: null };
+
+function closeConversation() {
+  const modal = document.getElementById('conversation-modal');
+  if (modal) modal.hidden = true;
+  if (CONVERSATION.timer) {
+    clearInterval(CONVERSATION.timer);
+    CONVERSATION.timer = null;
+  }
+  CONVERSATION.slug = null;
+  CONVERSATION.sessionId = null;
+}
+
+function renderConversationMessages(payload) {
+  const log = document.getElementById('conversation-log');
+  const titleEl = document.getElementById('conversation-title');
+  const idEl = document.getElementById('conversation-id');
+  const eyebrow = document.getElementById('conversation-eyebrow');
+  const subSel = document.getElementById('conversation-subagents');
+  if (!log) return;
+  const title = payload.title || (payload.sidechain ? 'Subagent' : 'Session');
+  if (titleEl) titleEl.textContent = title;
+  if (idEl) idEl.textContent = payload.session_id || '';
+  if (eyebrow) {
+    eyebrow.textContent = payload.sidechain
+      ? (payload.agent_type ? `Subagent · ${payload.agent_type}` : 'Subagent')
+      : 'Session';
+  }
+  if (subSel) {
+    const kids = Array.isArray(payload.subagents) ? payload.subagents : [];
+    if (!payload.sidechain && kids.length) {
+      subSel.hidden = false;
+      const current = subSel.value;
+      subSel.innerHTML = '';
+      const parentOpt = document.createElement('option');
+      parentOpt.value = payload.session_id || '';
+      parentOpt.textContent = 'Parent session';
+      subSel.appendChild(parentOpt);
+      kids.forEach((child) => {
+        const opt = document.createElement('option');
+        opt.value = child.id || '';
+        opt.textContent = child.title || child.agent_type || shortSessionId(child.id);
+        subSel.appendChild(opt);
+      });
+      if (current && [...subSel.options].some((o) => o.value === current)) subSel.value = current;
+      else subSel.value = payload.session_id || '';
+    } else {
+      subSel.hidden = true;
+    }
+  }
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  if (!messages.length) {
+    log.innerHTML = '<div class="conv-empty">No transcript yet for this session.</div>';
+    return;
+  }
+  log.innerHTML = '';
+  messages.forEach((msg) => {
+    const el = document.createElement('article');
+    const kind = msg.kind || 'assistant';
+    el.className = `conv-msg conv-msg--${kind}`;
+    const who = document.createElement('div');
+    who.className = 'conv-msg__who';
+    who.textContent = kind === 'user' ? 'You' : kind === 'tool' ? (msg.tool && msg.tool.name) || 'Tool' : kind === 'question' ? 'Question' : 'Agent';
+    el.appendChild(who);
+    if (kind === 'tool' && msg.tool) {
+      const summary = document.createElement('div');
+      summary.className = 'conv-msg__summary';
+      summary.textContent = `${msg.tool.status || ''} ${msg.tool.summary || ''}`.trim();
+      el.appendChild(summary);
+      if (msg.tool.output) {
+        const pre = document.createElement('pre');
+        pre.className = 'conv-msg__pre';
+        pre.textContent = msg.tool.output;
+        el.appendChild(pre);
+      }
+    } else if (kind === 'question' && msg.question) {
+      const q = document.createElement('div');
+      q.className = 'conv-msg__text';
+      q.textContent = msg.question.prompt || msg.question.title || 'Input needed';
+      el.appendChild(q);
+    } else {
+      const body = document.createElement('div');
+      body.className = 'conv-msg__text';
+      body.textContent = msg.text || '';
+      el.appendChild(body);
+    }
+    log.appendChild(el);
+  });
+  log.scrollTop = log.scrollHeight;
+}
+
+async function loadConversation(sessionId) {
+  if (!STATE.slug || !sessionId) return;
+  const slug = STATE.slug;
+  const data = await api(
+    '/api/tasks/' + encodeURIComponent(slug) + '/conversation?session=' + encodeURIComponent(sessionId) + '&limit=200',
+  );
+  if (STATE.slug !== slug || CONVERSATION.sessionId !== sessionId) return;
+  renderConversationMessages(data);
+}
+
+async function openConversation(sessionId, opts = {}) {
+  if (!STATE.slug || !sessionId) return;
+  const modal = document.getElementById('conversation-modal');
+  if (!modal) return;
+  CONVERSATION.slug = STATE.slug;
+  CONVERSATION.sessionId = sessionId;
+  modal.hidden = false;
+  const log = document.getElementById('conversation-log');
+  if (log) log.innerHTML = '<div class="conv-empty">Loading…</div>';
+  try {
+    await loadConversation(sessionId);
+  } catch (err) {
+    if (log) log.innerHTML = `<div class="conv-empty">${escapeHtml(err.message || 'failed')}</div>`;
+  }
+  if (CONVERSATION.timer) clearInterval(CONVERSATION.timer);
+  CONVERSATION.timer = setInterval(() => {
+    if (modal.hidden || CONVERSATION.sessionId !== sessionId) return;
+    loadConversation(sessionId).catch(() => {});
+  }, 2500);
+}
+
+document.getElementById('btn-conversation-close')?.addEventListener('click', closeConversation);
+document.getElementById('conversation-modal')?.addEventListener('click', (event) => {
+  if (event.target.id === 'conversation-modal') closeConversation();
+});
+document.getElementById('conversation-subagents')?.addEventListener('change', (event) => {
+  const id = event.target.value;
+  if (id) openConversation(id);
+});
+
+async function updateLoomFromUi() {
+  let status;
+  try {
+    status = await apiNoProject('/api/server');
+  } catch (err) {
+    toast(err.message || 'could not read server status', { type: 'error' });
+    return;
+  }
+  const git = status.git || {};
+  const jobs = status.active_one_shot_jobs || [];
+  const lines = [
+    `Restart Loom ${status.version || ''} from`,
+    status.source || '(this checkout)',
+    git.head ? `HEAD ${git.head} (${git.branch || '?'})` : '',
+    '',
+    'Agent tmux sessions keep running. Independently started Turbogate tunnels keep their URL.',
+    jobs.length ? `\nIn-flight AR jobs will be lost:\n- ${jobs.join('\n- ')}` : '',
+  ].filter(Boolean);
+  if (!confirm(lines.join('\n'))) return;
+  const pull = confirm('git pull --ff-only this checkout first?\n\nCancel = restart from files already on disk (use this after rsync).');
+  const btn = document.getElementById('btn-server-update');
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.label = btn.textContent;
+    btn.textContent = 'Updating…';
+  }
+  try {
+    const result = await apiNoProject('/api/server/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        pull,
+        dry_run: false,
+        allow_active_jobs: jobs.length > 0,
+      }),
+    });
+    if (!result.ok) throw new Error(result.error || 'update failed');
+    toast('Restarting Loom… tmux agents stay up', { type: 'success', ttl: 8000 });
+    await waitForLoomRestart();
+    toast('Loom is back', { type: 'success' });
+    location.reload();
+  } catch (err) {
+    toast(err.message || 'update failed', { type: 'error' });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.label || 'Update Loom';
+    }
+  }
+}
+
+async function waitForLoomRestart() {
+  await sleep(1200);
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      await apiNoProject('/api/server');
+      return;
+    } catch {
+      await sleep(500);
+    }
+  }
+  throw new Error('Loom did not come back; check the server log');
+}
+
+document.getElementById('btn-server-update')?.addEventListener('click', updateLoomFromUi);
 
 // These four hand control to the agent, so the keyboard belongs in the pane
 // once they finish — otherwise the next keystroke dies on the button.

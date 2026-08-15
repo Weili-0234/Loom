@@ -6,7 +6,7 @@
   <title>Loom</title>
   <link rel="icon" type="image/png" href="/static/loom-logo.png" />
   <link rel="stylesheet" href="/static/vendor/xterm.css?v=5.5.0" />
-  <link rel="stylesheet" href="/static/app.css?v=20260810-1" />
+  <link rel="stylesheet" href="/static/app.css?v=20260814-1" />
 </head>
 <body>
   <header class="topbar">
@@ -36,6 +36,10 @@
         <span class="btn__label-full">Factory</span>
         <span class="btn__label-short" aria-hidden="true">AR</span>
       </a>
+      <button type="button" class="btn btn--ghost" id="btn-server-update" title="Restart Loom from this checkout without killing agent tmux sessions">
+        <span class="btn__label-full">Update Loom</span>
+        <span class="btn__label-short" aria-hidden="true">Update</span>
+      </button>
       <button type="button" class="btn btn--primary" id="btn-create-open">
         <span class="btn__label-full">Create Task</span>
         <span class="btn__label-short" aria-hidden="true">+ Task</span>
@@ -651,8 +655,25 @@
     </div>
   </div>
 
+  <div class="preview-modal" id="conversation-modal" hidden>
+    <div class="preview-modal__card conv-modal__card" role="dialog" aria-modal="true" aria-labelledby="conversation-title">
+      <header class="preview-modal__header">
+        <div>
+          <p class="preview-modal__eyebrow" id="conversation-eyebrow">Session</p>
+          <h2 id="conversation-title">Conversation</h2>
+          <p class="preview-modal__sub"><code id="conversation-id">…</code></p>
+        </div>
+        <div class="preview-modal__actions">
+          <select id="conversation-subagents" class="session-select" hidden aria-label="Subagent session"></select>
+          <button type="button" class="icon-btn" id="btn-conversation-close" aria-label="Close">×</button>
+        </div>
+      </header>
+      <main class="preview-modal__body conv-log" id="conversation-log"></main>
+    </div>
+  </div>
+
   <script src="/static/vendor/xterm.js?v=5.5.0"></script>
   <script src="/static/vendor/addon-fit.js?v=0.10.0"></script>
-  <script src="/static/app.js?v=20260810-1"></script>
+  <script src="/static/app.js?v=20260814-1"></script>
 </body>
 </html>

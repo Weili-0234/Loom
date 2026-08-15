@@ -4,6 +4,7 @@ from loom.web import (
     _AGENT_WORKING_RE,
     _conversation_terminal_answer_keys,
     _conversation_terminal_question,
+    _iter_session_entries,
     _parse_conversation_transcript,
 )
 
@@ -121,6 +122,28 @@ def test_claude_conversation_matches_tool_result_and_ignores_thinking(tmp_path) 
         "output": "file contents",
     }
     assert messages[1]["text"] == "Done."
+
+
+def test_claude_parent_transcript_skips_sidechain_rows(tmp_path) -> None:
+    transcript = tmp_path / "parent.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "assistant",
+                "isSidechain": True,
+                "message": {"content": [{"type": "text", "text": "subagent only"}]},
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "parent only"}]},
+            },
+        ],
+    )
+    skipped = _parse_conversation_transcript(transcript, "claude", skip_sidechain=True)
+    kept = _parse_conversation_transcript(transcript, "claude", skip_sidechain=False)
+    assert [m["text"] for m in skipped] == ["parent only"]
+    assert [m["text"] for m in kept] == ["subagent only", "parent only"]
 
 
 def test_cursor_question_becomes_clickable_choices(tmp_path) -> None:
@@ -243,3 +266,16 @@ def test_terminal_checkbox_question_is_parsed_and_answered_with_keys() -> None:
         ["2"],
         submit=False,
     ) == []
+
+
+def test_iter_session_entries_flattens_subagents() -> None:
+    flat = _iter_session_entries(
+        [
+            {
+                "id": "parent",
+                "subagents": [{"id": "child-a"}, {"id": "child-b"}],
+            },
+            {"id": "other"},
+        ]
+    )
+    assert [item["id"] for item in flat] == ["parent", "child-a", "child-b", "other"]

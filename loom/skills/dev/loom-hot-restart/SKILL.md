@@ -7,7 +7,20 @@ disable-model-invocation: true
 # Loom Hot Restart
 
 This is a **controlled process replacement**, not in-process Python hot
-loading. Expect a short local-port outage while the public tunnel process stays
+loading. Prefer the first-class command when a Loom is already running:
+
+```bash
+loom update --port 8766            # restart from files on disk
+loom update --port 8766 --pull     # git pull --ff-only, then restart
+loom update --port 8766 --dry-run
+```
+
+The web UI **Update Loom** button is the same action. The helper below is
+the Linux-only, Turbogate-pipe-preserving variant for cases where Loom
+itself spawned the tunnel (stdout would otherwise break). Independent
+`setsid`/`nohup` tunnels do not need it.
+
+Expect a short local-port outage while the public tunnel process stays
 alive and resumes forwarding to the new Loom process.
 
 Linux only: the helper uses `/proc`, POSIX signals, process groups, and `fork`.

@@ -1381,13 +1381,156 @@ def claude_project_dir(cwd: Path) -> Path:
 
 
 def _list_claude_session_files(cwd: Path) -> list[Path]:
-    """All ``<uuid>.jsonl`` session files for *cwd*, oldest first."""
+    """All ``<uuid>.jsonl`` session files for *cwd*, oldest first.
+
+    Claude Code writes the parent transcript next to sidechain / subagent
+    transcripts (same directory, or ``subagents/`` / ``agents/``).
+    """
     d = claude_project_dir(cwd)
     if not d.is_dir():
         return []
-    files = [p for p in d.iterdir() if p.is_file() and p.suffix == ".jsonl"]
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for pattern in ("*.jsonl", "subagents/*.jsonl", "agents/*.jsonl"):
+        for path in d.glob(pattern):
+            if path.is_file() and path.suffix == ".jsonl" and path not in seen:
+                seen.add(path)
+                files.append(path)
     files.sort(key=lambda p: p.stat().st_mtime)
     return files
+
+
+_CLAUDE_SESSION_SCAN_BYTES = 256 * 1024
+_CLAUDE_TITLE_KEYS = ("customTitle", "aiTitle", "lastPrompt", "summary")
+
+
+def _claude_block_text(block: Any) -> str:
+    if isinstance(block, str):
+        return block
+    if not isinstance(block, dict):
+        return ""
+    for key in ("text", "thinking"):
+        value = block.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _claude_user_prompt_text(record: dict[str, Any]) -> str:
+    if record.get("isMeta") is True:
+        return ""
+    role = str(record.get("type") or record.get("role") or "")
+    if role != "user":
+        return ""
+    message = record.get("message")
+    if isinstance(message, str):
+        return message.strip()
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type") or "") in ("tool_result", "tool_use"):
+            continue
+        text = _claude_block_text(block)
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def inspect_claude_session(path: Path) -> dict[str, Any]:
+    """Scan a Claude Code JSONL for sidechain / title / parent-link metadata.
+
+    Reads only the first ~256 KB. Missing files yield empty metadata rather
+    than raising, so the sessions API stays up if a transcript is mid-write.
+    """
+    info: dict[str, Any] = {
+        "sidechain": False,
+        "parent_id": "",
+        "agent_id": "",
+        "agent_type": "",
+        "title": "",
+        "task_agent_ids": [],
+    }
+    try:
+        scanned = 0
+        first_user = ""
+        titles: dict[str, str] = {}
+        task_ids: list[str] = []
+        with path.open("rb") as handle:
+            for raw in handle:
+                scanned += len(raw)
+                if scanned > _CLAUDE_SESSION_SCAN_BYTES:
+                    break
+                try:
+                    record = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if record.get("isSidechain") is True:
+                    info["sidechain"] = True
+                for key in ("parentSessionId", "parent_session_id"):
+                    value = str(record.get(key) or "").strip()
+                    if value and not info["parent_id"]:
+                        info["parent_id"] = value
+                agent_id = str(record.get("agentId") or record.get("agent_id") or "").strip()
+                if agent_id and not info["agent_id"]:
+                    info["agent_id"] = agent_id
+                agent_type = str(
+                    record.get("agentType")
+                    or record.get("subagent_type")
+                    or record.get("agent_type")
+                    or ""
+                ).strip()
+                if agent_type and not info["agent_type"]:
+                    info["agent_type"] = agent_type
+                for key in _CLAUDE_TITLE_KEYS:
+                    value = record.get(key)
+                    if isinstance(value, str) and value.strip() and key not in titles:
+                        titles[key] = " ".join(value.split())
+                if not first_user:
+                    first_user = " ".join(_claude_user_prompt_text(record).split())
+                message = record.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        name = str(block.get("name") or "")
+                        if str(block.get("type") or "") != "tool_use":
+                            continue
+                        if name not in ("Task", "Agent", "TaskCreate"):
+                            continue
+                        payload = block.get("input")
+                        if not isinstance(payload, dict):
+                            continue
+                        linked = str(
+                            payload.get("agentId")
+                            or block.get("id")
+                            or ""
+                        ).strip()
+                        sub_type = str(payload.get("subagent_type") or payload.get("description") or "").strip()
+                        if linked and linked not in task_ids:
+                            task_ids.append(linked)
+                        if sub_type and not info["agent_type"] and info["sidechain"]:
+                            info["agent_type"] = sub_type
+        info["task_agent_ids"] = task_ids
+        title = next((titles[key] for key in _CLAUDE_TITLE_KEYS if titles.get(key)), "")
+        if not title:
+            title = first_user
+        if len(title) > 120:
+            title = title[:119].rstrip() + "…"
+        info["title"] = title
+    except OSError:
+        return info
+    return info
 
 
 def _read_codex_session_meta(path: Path) -> dict[str, Any] | None:

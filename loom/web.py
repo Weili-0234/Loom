@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from loom import agent_hooks
 from loom import ar_task as ar
 from loom.openclaw import OpenClawClient, OpenClawConfig, openclaw_status
+from loom import self_update
 from loom.paths import (
     AR_ROOT_ENV,
     KERNEL_HUB_ENV,
@@ -67,6 +68,7 @@ from loom.rud_task import (
     delete_task,
     detect_and_persist_worktree,
     ensure_cursor_default_model_config,
+    inspect_claude_session,
     join_skills_paths,
     list_session_files,
     list_task_markdown_files,
@@ -805,6 +807,19 @@ def _cursor_transcript_path(session_id: str, metadata_path: Path) -> Path | None
     return None
 
 
+def _iter_session_entries(sessions: Any) -> list[dict[str, Any]]:
+    """Flatten parent sessions plus nested Claude subagents."""
+    out: list[dict[str, Any]] = []
+    for item in sessions or []:
+        if not isinstance(item, dict):
+            continue
+        out.append(item)
+        for child in item.get("subagents") or []:
+            if isinstance(child, dict):
+                out.append(child)
+    return out
+
+
 def _conversation_transcript_path(
     session: dict[str, Any], agent: str
 ) -> Path | None:
@@ -828,13 +843,20 @@ def _conversation_transcript_path(
     return None
 
 
-def _parse_conversation_transcript(path: Path, agent: str) -> list[dict[str, Any]]:
-    """Normalize Claude/Cursor JSONL into a small Happy-style message protocol."""
+def _parse_conversation_transcript(
+    path: Path, agent: str, *, skip_sidechain: bool = False
+) -> list[dict[str, Any]]:
+    """Normalize Claude/Cursor JSONL into a small Happy-style message protocol.
+
+    Parent Claude transcripts sometimes contain copied sidechain rows
+    (``isSidechain: true``). Those belong to the subagent viewer, so skip
+    them when reading the parent file.
+    """
     try:
         stat = path.stat()
     except OSError:
         return []
-    key = str(path)
+    key = f"{path}:sidechain={int(skip_sidechain)}"
     signature = (stat.st_mtime_ns, stat.st_size)
     with _CONVERSATION_CACHE_LOCK:
         cached = _CONVERSATION_CACHE.get(key)
@@ -879,6 +901,8 @@ def _parse_conversation_transcript(path: Path, agent: str) -> list[dict[str, Any
                 except (json.JSONDecodeError, TypeError):
                     continue
                 if not isinstance(row, dict):
+                    continue
+                if skip_sidechain and row.get("isSidechain") is True:
                     continue
 
                 if agent == AGENT_CURSOR and cursor_running_tools:
@@ -4961,6 +4985,7 @@ def make_handler(
     monitor_manager: "TaskMonitorManager | None" = None,
     ar_manager: "ARLoopManager | None" = None,
     activity_watcher: "AgentActivityWatcher | None" = None,
+    listen_port: int = 8765,
 ) -> type[BaseHTTPRequestHandler]:
     static_root = web_static_dir().resolve()
     required_token = auth_token.strip()
@@ -5510,12 +5535,27 @@ def make_handler(
                         continue
                     prev = files_by_id.get(sid)
                     if prev is None or stat.st_mtime >= prev.get("mtime", 0.0):
-                        files_by_id[sid] = {
+                        entry: dict[str, Any] = {
                             "id": sid,
                             "path": str(p),
                             "mtime": stat.st_mtime,
                             "size": stat.st_size,
+                            "sidechain": False,
+                            "parent_id": "",
+                            "agent_id": "",
+                            "agent_type": "",
+                            "title": "",
+                            "subagents": [],
                         }
+                        if agent == AGENT_CLAUDE:
+                            meta_info = inspect_claude_session(p)
+                            entry["sidechain"] = bool(meta_info.get("sidechain"))
+                            entry["parent_id"] = str(meta_info.get("parent_id") or "")
+                            entry["agent_id"] = str(meta_info.get("agent_id") or "")
+                            entry["agent_type"] = str(meta_info.get("agent_type") or "")
+                            entry["title"] = str(meta_info.get("title") or "")
+                            entry["_task_agent_ids"] = list(meta_info.get("task_agent_ids") or [])
+                        files_by_id[sid] = entry
             # Preserve task-meta order (history of who-was-spawned-when)
             # but enrich with on-disk info.
             ordered = []
@@ -5524,12 +5564,58 @@ def make_handler(
                 if sid in files_by_id:
                     ordered.append(files_by_id[sid])
                 else:
-                    ordered.append({"id": sid, "path": "", "mtime": 0.0, "size": 0})
+                    ordered.append(
+                        {
+                            "id": sid,
+                            "path": "",
+                            "mtime": 0.0,
+                            "size": 0,
+                            "sidechain": False,
+                            "parent_id": "",
+                            "agent_id": "",
+                            "agent_type": "",
+                            "title": "",
+                            "subagents": [],
+                        }
+                    )
                 seen.add(sid)
             for sid, info in files_by_id.items():
                 if sid not in seen:
                     ordered.append(info)
-            ordered.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
+            parents: list[dict[str, Any]] = []
+            sidechains: list[dict[str, Any]] = []
+            for item in ordered:
+                if item.get("sidechain"):
+                    sidechains.append(item)
+                else:
+                    parents.append(item)
+            by_id = {str(item.get("id") or ""): item for item in parents}
+            for child in sidechains:
+                parent = None
+                parent_id = str(child.get("parent_id") or "")
+                if parent_id and parent_id in by_id:
+                    parent = by_id[parent_id]
+                if parent is None:
+                    agent_id = str(child.get("agent_id") or "")
+                    if agent_id:
+                        for candidate in parents:
+                            if agent_id in (candidate.get("_task_agent_ids") or []):
+                                parent = candidate
+                                break
+                if parent is None and len(parents) == 1:
+                    parent = parents[0]
+                payload = {k: v for k, v in child.items() if k != "_task_agent_ids"}
+                payload["subagents"] = []
+                if parent is not None:
+                    parent.setdefault("subagents", []).append(payload)
+                else:
+                    parents.append(payload)
+            for parent in parents:
+                parent.pop("_task_agent_ids", None)
+                kids = list(parent.get("subagents") or [])
+                kids.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
+                parent["subagents"] = kids
+            parents.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
             live = claude_registry.session_status(
                 project_id, slug, agent, meta.tmux_interview_target or ""
             )
@@ -5537,7 +5623,7 @@ def make_handler(
                 "agent": agent,
                 "agent_label": agent_label(agent),
                 "tracked": [sid for sid in meta.claude_session_ids],
-                "sessions": ordered,
+                "sessions": parents,
                 "tmux_alive": live["tmux_alive"],
                 "pane_command": live["pane_command"],
                 "agent_running": live["agent_running"],
@@ -5545,6 +5631,24 @@ def make_handler(
                 "tmux_target": meta.tmux_interview_target or "",
                 "claude_cwd": str(cwd),
             }
+
+        def _registered_projects(self) -> list[tuple[str, Path]]:
+            out: list[tuple[str, Path]] = []
+            try:
+                for item in pr.list_projects():
+                    pid, path = item.get("id"), item.get("path")
+                    if pid and path:
+                        out.append((str(pid), Path(path)))
+            except Exception:  # noqa: BLE001
+                pass
+            return out
+
+        def _server_status(self) -> dict[str, Any]:
+            payload = self_update.server_status(listen_port)
+            payload["active_one_shot_jobs"] = self_update.active_one_shot_jobs(
+                self._registered_projects()
+            )
+            return payload
 
         # ===== GET =====
 
@@ -5618,6 +5722,11 @@ def make_handler(
                         },
                     }
                 )
+                self._send(st, b, h)
+                return
+
+            if path == "/api/server":
+                st, b, h = _json_bytes(self._server_status())
                 self._send(st, b, h)
                 return
 
@@ -6338,7 +6447,7 @@ def make_handler(
                 limit = max(20, min(500, limit))
                 selected_session: dict[str, Any] | None = None
                 transcript_path: Path | None = None
-                for candidate in summary.get("sessions") or []:
+                for candidate in _iter_session_entries(summary.get("sessions")):
                     if requested_id and candidate.get("id") != requested_id:
                         continue
                     candidate_path = _conversation_transcript_path(
@@ -6390,7 +6499,9 @@ def make_handler(
                     return
 
                 all_messages = _parse_conversation_transcript(
-                    transcript_path, str(summary.get("agent") or "")
+                    transcript_path,
+                    str(summary.get("agent") or ""),
+                    skip_sidechain=not bool(selected_session.get("sidechain")),
                 )
                 visible_messages: list[dict[str, Any]] = []
                 terminal_appended = False
@@ -6434,6 +6545,10 @@ def make_handler(
                         "online": active,
                         "working": working,
                         "session_id": selected_session.get("id"),
+                        "title": selected_session.get("title") or "",
+                        "sidechain": bool(selected_session.get("sidechain")),
+                        "agent_type": selected_session.get("agent_type") or "",
+                        "subagents": selected_session.get("subagents") or [],
                         "updated_at": int(time.time() * 1000)
                         if terminal_appended
                         else updated_at,
@@ -6559,6 +6674,30 @@ def make_handler(
                 return
             path = parsed.path
             body = _read_json(self)
+
+            if path == "/api/server/update":
+                pull = bool(body.get("pull", False))
+                dry_run = bool(body.get("dry_run", False))
+                allow_jobs = bool(body.get("allow_active_jobs", False))
+                result = self_update.schedule_restart(
+                    listen_port,
+                    pull=pull,
+                    allow_active_jobs=allow_jobs,
+                    projects=self._registered_projects(),
+                    dry_run=dry_run,
+                )
+                print(
+                    f"[web] server update dry_run={dry_run} pull={pull} "
+                    f"ok={result.get('ok')} scheduled={result.get('scheduled')}",
+                    flush=True,
+                )
+                st, b, h = (
+                    _json_bytes(result)
+                    if result.get("ok")
+                    else _json_bytes(result, 409 if result.get("active_one_shot_jobs") else 400)
+                )
+                self._send(st, b, h)
+                return
 
             if path == "/api/kernel/runs":
                 root, _pid = self._resolve_scope(parsed)
@@ -8279,6 +8418,7 @@ def serve(
         monitor_manager=monitor_manager,
         ar_manager=ar_manager,
         activity_watcher=activity_watcher,
+        listen_port=port,
     )
     server = ThreadingHTTPServer((host, port), handler)
     rud_root = project_root / ".RUD"

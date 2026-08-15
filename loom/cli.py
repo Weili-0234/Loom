@@ -1,6 +1,8 @@
 """CLI entry point for Loom.
 
 - ``loom doctor`` checks the external tools Loom drives (tmux, git, agent CLI).
+- ``loom update`` restarts a running web process from this checkout without
+  killing agent tmux sessions.
 - ``loom init`` writes the minimal PLAN.md / NOTES.md templates
   into the current directory.
 - ``loom web`` runs the local web UI for browsing / editing tasks
@@ -9,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -99,6 +102,81 @@ def doctor(
         return
     console.print(f"\n[red]{len(report.failures)} check(s) failed.[/red]")
     raise typer.Exit(1)
+
+
+@app.command("update")
+def update_cmd(
+    host: str = typer.Option("127.0.0.1", "--host", help="Running Loom bind address"),
+    port: int = typer.Option(8765, "--port", help="Running Loom HTTP port"),
+    pull: bool = typer.Option(
+        False,
+        "--pull/--no-pull",
+        help="git pull --ff-only in the source checkout before restarting",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would happen without replacing the process",
+    ),
+    allow_active_jobs: bool = typer.Option(
+        False,
+        "--allow-active-jobs",
+        help="Restart even if AR mine/idea/review jobs are running (they will be lost)",
+    ),
+) -> None:
+    """Restart a running Loom web process without killing agent tmux sessions.
+
+    The new process is launched from this checkout (and its ``.venv`` if
+    present). Turbogate tunnels started independently of Loom keep their URL.
+    """
+    token = os.environ.get("LOOM_WEB_AUTH_TOKEN", "").strip()
+    payload = {
+        "pull": pull,
+        "dry_run": dry_run,
+        "allow_active_jobs": allow_active_jobs,
+    }
+    url = f"http://{host}:{port}/api/server/update"
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            console.print(f"[red]update failed:[/red] HTTP {exc.code} {raw[:300]}")
+            raise typer.Exit(1)
+        console.print(f"[red]update refused:[/red] {body.get('error') or raw[:300]}")
+        raise typer.Exit(1)
+    except Exception as exc:  # noqa: BLE001
+        console.print(
+            f"[red]could not reach Loom at {url}[/red] ({exc})\n"
+            "Start it first, or pass --host/--port."
+        )
+        raise typer.Exit(1)
+    if dry_run:
+        console.print("[green]dry-run ok[/green]")
+    elif body.get("scheduled"):
+        console.print("[green]restart scheduled[/green] — tmux agent sessions keep running")
+    else:
+        console.print("[green]ok[/green]")
+    git = body.get("git") or {}
+    if git.get("head"):
+        console.print(f"[dim]source[/dim] {body.get('source')}  [dim]HEAD[/dim] {git.get('head')} ({git.get('branch')})")
+    if body.get("pull") and isinstance(body.get("pull"), dict) and body["pull"].get("output"):
+        console.print(body["pull"]["output"])
 
 
 @app.command()

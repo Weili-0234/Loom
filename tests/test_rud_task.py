@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from loom.rud_task import (
     claude_project_dir,
     create_task,
     delete_task,
+    inspect_claude_session,
     list_session_files,
     list_task_markdown_files,
     path_under_task,
@@ -283,6 +285,76 @@ def test_list_session_files_returns_jsonl_sorted(tmp_path: Path, monkeypatch) ->
     files = list_session_files(cwd, "claude")
     assert [p.name for p in files] == ["aaaa-bbbb.jsonl", "cccc-dddd.jsonl"]
     assert session_id_from_path(files[-1], "claude") == "cccc-dddd"
+
+
+def test_list_session_files_includes_subagent_dir(tmp_path: Path, monkeypatch) -> None:
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(rud_task.Path, "home", classmethod(lambda cls: fake_home))
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    enc = claude_project_dir(cwd)
+    (enc / "subagents").mkdir(parents=True)
+    parent = enc / "parent-sess.jsonl"
+    child = enc / "subagents" / "child-sess.jsonl"
+    parent.write_text("{}\n", encoding="utf-8")
+    child.write_text("{}\n", encoding="utf-8")
+    names = {p.name for p in list_session_files(cwd, "claude")}
+    assert names == {"parent-sess.jsonl", "child-sess.jsonl"}
+
+
+def test_inspect_claude_session_detects_sidechain(tmp_path: Path) -> None:
+    path = tmp_path / "side.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "user",
+                        "isSidechain": True,
+                        "parentSessionId": "parent-uuid",
+                        "agentId": "agent-7",
+                        "agentType": "generalPurpose",
+                        "message": {"content": [{"type": "text", "text": "Look at the tests"}]},
+                    }
+                ),
+                json.dumps({"type": "assistant", "isSidechain": True, "message": {"content": []}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    info = inspect_claude_session(path)
+    assert info["sidechain"] is True
+    assert info["parent_id"] == "parent-uuid"
+    assert info["agent_id"] == "agent-7"
+    assert info["agent_type"] == "generalPurpose"
+    assert "Look at the tests" in info["title"]
+
+
+def test_inspect_claude_session_collects_task_agent_ids(tmp_path: Path) -> None:
+    path = tmp_path / "parent.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_abc",
+                            "name": "Task",
+                            "input": {"description": "review", "subagent_type": "generalPurpose"},
+                        }
+                    ]
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    info = inspect_claude_session(path)
+    assert info["sidechain"] is False
+    assert "toolu_abc" in info["task_agent_ids"]
 
 
 # --- worktree helpers (real git) --------------------------------------------

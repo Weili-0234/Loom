@@ -130,9 +130,26 @@ When you're happy, **Push** the worktree or **Merge ↩** it from the Changes ta
 ```bash
 loom doctor    # check prerequisites and report what's missing
 loom init      # writes a minimal PLAN.md + NOTES.md in $PWD
+loom update    # restart a running loom web from this checkout; tmux agents keep running
 loom --version # installed version
 loom --help    # all commands
 ```
+
+To pick up new Loom code without killing agent panes (or a Turbogate URL started
+outside Loom):
+
+```bash
+# after git pull / rsync into the checkout that is running:
+loom update --port 8765            # restart from files already on disk
+loom update --port 8765 --pull     # git pull --ff-only, then restart
+loom update --port 8765 --dry-run  # print the plan only
+```
+
+The same action is the **Update Loom** button in the top bar. It SIGKILLs the
+web process (so independently-started tunnels are not cleaned up) and execs
+`python -m loom web` from the checkout's `.venv`. AR mine / idea / reviewer
+jobs that are in-flight are not resumable and block the restart unless you
+confirm.
 
 ## Layout on disk
 
@@ -168,7 +185,7 @@ a read-only Markdown viewer (Kernel Lab tasks get their own panel). Every contro
 | | **Skills** | Which skills markdown to inject (files under the skills dir). |
 | | **Worktrees** | Dropdown of the task's worktrees + live `git status`; **Push** (selected), **×** remove, **+ Add worktree**, **Push all**. |
 | | **tmux** | The live pane target + an alive/down pill. |
-| | **Sessions** | Dropdown of past agent sessions (newest first) + **Resume** — reopens it in a fresh pane, even if the tmux was killed. |
+| | **Sessions** | Dropdown of past agent sessions (newest first) + **View** (transcript, including Claude Code subagent sessions nested under the parent) + **Resume**. |
 | | **Monitor** | **Notify** toggle → pings you (OpenClaw/Slack) when the agent stops; your reply is typed back into the pane. |
 | | **Markdown viewer** | Read-only preview of `PLAN.md` (or any top-level `*.md`). The agent writes PLAN.md; you `/goal` it in the pane. |
 | **Changes tab** | **Diff** | Read-only VSCode-style diff: uncommitted (vs `HEAD`, incl. untracked) + committed (vs base, e.g. `origin/main`). |
@@ -343,6 +360,8 @@ Everything is plain JSON; scope with `?project=<id>` (or the
 | Method | URL | Purpose |
 |--------|-----|---------|
 | `GET` | `/api/project` | Active project root, skills path, skills options |
+| `GET` | `/api/server` | Loom version, source checkout, git HEAD, in-flight AR jobs |
+| `POST` | `/api/server/update` `{pull?, dry_run?, allow_active_jobs?}` | Pull (optional) and restart the web process; tmux agents survive |
 | `GET` | `/api/projects` | List registered projects, default, launch root |
 | `POST` | `/api/projects` `{path}` | Register a project root |
 | `POST` | `/api/projects/<id>/activate` | Set the default project |
@@ -369,7 +388,8 @@ Everything is plain JSON; scope with `?project=<id>` (or the
 | `POST` | `/api/tasks/<slug>/claude/stop` | Kill the tmux pane (on-disk sessions stay resumable) |
 | `POST` | `/api/tasks/<slug>/claude/paste-prompt` | Re-paste the deep-interview prompt |
 | `POST` | `/api/tasks/<slug>/claude/resume` `{session_id}` | New tmux, `--resume <id>` |
-| `GET` | `/api/tasks/<slug>/claude-sessions` | Tracked session UUIDs + on-disk transcripts |
+| `GET` | `/api/tasks/<slug>/claude-sessions` | Tracked session UUIDs + on-disk transcripts; Claude subagents nested under `subagents` |
+| `GET` | `/api/tasks/<slug>/conversation?session=` | Parsed transcript for a parent or subagent session |
 | `GET` | `/api/tmux/stream?target=…&cols=N&rows=N` | Live PTY byte stream for the xterm terminal |
 | `GET` | `/api/tmux/capture?target=…&lines=N` | Pane scrollback snapshot (used by the monitor) |
 | `POST` | `/api/tmux/send-literal` `{target, text}` | Send raw keystrokes/bytes (used by the terminal) |
