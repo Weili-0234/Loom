@@ -120,6 +120,7 @@ def test_claude_conversation_matches_tool_result_and_ignores_thinking(tmp_path) 
         "status": "completed",
         "input": '{\n  "file_path": "/tmp/example.py"\n}',
         "output": "file contents",
+        "external_id": "tool-1",
     }
     assert messages[1]["text"] == "Done."
 
@@ -279,3 +280,47 @@ def test_iter_session_entries_flattens_subagents() -> None:
         ]
     )
     assert [item["id"] for item in flat] == ["parent", "child-a", "child-b", "other"]
+
+
+def test_claude_task_tool_records_linkage_ids(tmp_path) -> None:
+    transcript = tmp_path / "parent.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Task",
+                            "id": "toolu_task_1",
+                            "input": {
+                                "description": "Scout the repo",
+                                "subagent_type": "Explore",
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "toolUseResult": {"status": "completed", "agentId": "abc123def"},
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_task_1",
+                            "content": [{"type": "text", "text": "report text"}],
+                        }
+                    ]
+                },
+            },
+        ],
+    )
+    messages = _parse_conversation_transcript(transcript, "claude")
+    tools = [m["tool"] for m in messages if m.get("kind") == "tool"]
+    assert len(tools) == 1
+    assert tools[0]["external_id"] == "toolu_task_1"
+    assert tools[0]["agent_id"] == "abc123def"
+    assert tools[0]["status"] == "completed"

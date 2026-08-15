@@ -965,6 +965,7 @@ def _parse_conversation_transcript(
                                 "status": "running",
                                 "input": _conversation_clip(payload),
                                 "output": "",
+                                "external_id": external_id,
                             },
                         }
                         messages.append(tool_message)
@@ -992,6 +993,14 @@ def _parse_conversation_transcript(
                             tool_message["tool"]["output"] = _conversation_clip(
                                 _conversation_block_text(block.get("content"))
                             )
+                            # A finished Task tool carries the spawned agent's
+                            # id at the row level; keep it so the API can link
+                            # the step to its subagent transcript.
+                            tool_result = row.get("toolUseResult")
+                            if isinstance(tool_result, dict):
+                                linked_agent = str(tool_result.get("agentId") or "").strip()
+                                if linked_agent:
+                                    tool_message["tool"]["agent_id"] = linked_agent
     except OSError:
         return []
 
@@ -5545,6 +5554,7 @@ def make_handler(
                             "agent_id": "",
                             "agent_type": "",
                             "title": "",
+                            "tool_use_id": "",
                             "subagents": [],
                         }
                         if agent == AGENT_CLAUDE:
@@ -5554,6 +5564,7 @@ def make_handler(
                             entry["agent_id"] = str(meta_info.get("agent_id") or "")
                             entry["agent_type"] = str(meta_info.get("agent_type") or "")
                             entry["title"] = str(meta_info.get("title") or "")
+                            entry["tool_use_id"] = str(meta_info.get("tool_use_id") or "")
                             entry["_task_agent_ids"] = list(meta_info.get("task_agent_ids") or [])
                         files_by_id[sid] = entry
             # Preserve task-meta order (history of who-was-spawned-when)
@@ -5575,6 +5586,7 @@ def make_handler(
                             "agent_id": "",
                             "agent_type": "",
                             "title": "",
+                            "tool_use_id": "",
                             "subagents": [],
                         }
                     )
@@ -6503,6 +6515,26 @@ def make_handler(
                     str(summary.get("agent") or ""),
                     skip_sidechain=not bool(selected_session.get("sidechain")),
                 )
+                # Link Task tool steps to the transcripts of the subagents
+                # they spawned, keyed by the spawning tool_use id (from the
+                # subagent's meta.json) or the agentId the finished tool
+                # reported, so the UI can offer a drill-in per step.
+                subagent_by_key: dict[str, dict[str, Any]] = {}
+                for child in selected_session.get("subagents") or []:
+                    child_id = str(child.get("id") or "")
+                    if not child_id:
+                        continue
+                    child_ref = {
+                        "session_id": child_id,
+                        "agent_type": str(child.get("agent_type") or ""),
+                        "title": str(child.get("title") or ""),
+                    }
+                    for link_key in (
+                        str(child.get("tool_use_id") or ""),
+                        str(child.get("agent_id") or ""),
+                    ):
+                        if link_key:
+                            subagent_by_key.setdefault(link_key, child_ref)
                 visible_messages: list[dict[str, Any]] = []
                 terminal_appended = False
                 for original in all_messages[-limit:]:
@@ -6511,6 +6543,12 @@ def make_handler(
                         tool = dict(message.get("tool") or {})
                         if not active and tool.get("status") == "running":
                             tool["status"] = "canceled"
+                        if subagent_by_key:
+                            link = subagent_by_key.get(
+                                str(tool.get("external_id") or "")
+                            ) or subagent_by_key.get(str(tool.get("agent_id") or ""))
+                            if link is not None:
+                                tool["subagent"] = link
                         message["tool"] = tool
                     elif message.get("kind") == "question":
                         question = dict(message.get("question") or {})

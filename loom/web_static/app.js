@@ -5636,6 +5636,17 @@ function renderConversationMessages(payload) {
       summary.className = 'conv-msg__summary';
       summary.textContent = `${msg.tool.status || ''} ${msg.tool.summary || ''}`.trim();
       el.appendChild(summary);
+      const sub = msg.tool.subagent;
+      if (sub && sub.session_id) {
+        const jump = document.createElement('button');
+        jump.type = 'button';
+        jump.className = 'conv-msg__subagent-link';
+        const label = sub.agent_type || 'subagent';
+        jump.textContent = `View ${label} trajectory →`;
+        if (sub.title) jump.title = sub.title;
+        jump.addEventListener('click', () => openConversation(sub.session_id));
+        el.appendChild(jump);
+      }
       if (msg.tool.output) {
         const pre = document.createElement('pre');
         pre.className = 'conv-msg__pre';

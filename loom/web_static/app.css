@@ -1946,6 +1946,19 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   cursor: pointer;
 }
 .session-subagent:hover { border-color: var(--border-focus); }
+.conv-msg__subagent-link {
+  display: inline-block;
+  margin: 2px 0 6px;
+  font: inherit;
+  font-size: 0.76rem;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+}
+.conv-msg__subagent-link:hover { border-color: var(--border-focus); }
 
 .conv-modal__card { width: min(880px, 100%); }
 .conv-log {

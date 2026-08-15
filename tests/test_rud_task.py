@@ -976,3 +976,55 @@ def test_read_meta_repairs_invalid_parameterized_cursor_default(tmp_path: Path) 
     data["interview_model"] = "gpt-5.6-sol-max[context=1m]"
     tj.write_text(_json.dumps(data, indent=2))
     assert read_meta(tmp_path, meta.slug).interview_model == "gpt-5.6-sol-max"
+
+
+def test_inspect_claude_session_reads_subagent_meta_json(tmp_path: Path) -> None:
+    subdir = tmp_path / "subagents"
+    subdir.mkdir()
+    transcript = subdir / "agent-abc123def.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "isSidechain": True,
+                "agentId": "abc123def",
+                "message": {"content": [{"type": "text", "text": "scouting"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (subdir / "agent-abc123def.meta.json").write_text(
+        json.dumps(
+            {
+                "agentType": "Explore",
+                "description": "Scout the repo",
+                "toolUseId": "toolu_task_1",
+                "spawnDepth": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    info = inspect_claude_session(transcript)
+    assert info["sidechain"] is True
+    assert info["tool_use_id"] == "toolu_task_1"
+    assert info["agent_type"] == "Explore"
+    assert info["agent_id"] == "abc123def"
+    assert info["title"] == "Scout the repo"
+
+
+def test_inspect_claude_session_without_meta_json_keeps_defaults(tmp_path: Path) -> None:
+    transcript = tmp_path / "parent.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "hello"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    info = inspect_claude_session(transcript)
+    assert info["sidechain"] is False
+    assert info["tool_use_id"] == ""

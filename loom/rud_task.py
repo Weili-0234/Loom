@@ -1456,8 +1456,25 @@ def inspect_claude_session(path: Path) -> dict[str, Any]:
         "agent_id": "",
         "agent_type": "",
         "title": "",
+        "tool_use_id": "",
         "task_agent_ids": [],
     }
+    # Subagent transcripts ship a sibling ``agent-<id>.meta.json`` written at
+    # spawn time: the Task tool_use id that launched the agent, its type, and
+    # the prompt description — available even before the transcript has rows,
+    # and the only place the spawning tool call is named explicitly.
+    meta_description = ""
+    try:
+        meta_record = json.loads(
+            path.with_name(f"{path.stem}.meta.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        meta_record = None
+    if isinstance(meta_record, dict):
+        info["sidechain"] = True
+        info["tool_use_id"] = str(meta_record.get("toolUseId") or "").strip()
+        info["agent_type"] = str(meta_record.get("agentType") or "").strip()
+        meta_description = " ".join(str(meta_record.get("description") or "").split())
     try:
         scanned = 0
         first_user = ""
@@ -1524,7 +1541,7 @@ def inspect_claude_session(path: Path) -> dict[str, Any]:
         info["task_agent_ids"] = task_ids
         title = next((titles[key] for key in _CLAUDE_TITLE_KEYS if titles.get(key)), "")
         if not title:
-            title = first_user
+            title = meta_description or first_user
         if len(title) > 120:
             title = title[:119].rstrip() + "…"
         info["title"] = title
