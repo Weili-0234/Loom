@@ -5663,6 +5663,35 @@ function renderConversationMessages(payload) {
         jump.addEventListener('click', () => openConversation(sub.session_id));
         el.appendChild(jump);
       }
+      if (msg.tool.input) {
+        // The summary is a description; the actual invocation matters more.
+        // A shell command reads inline; everything else folds behind a
+        // "Raw arguments" disclosure so wide JSON does not bury the chat.
+        let inlineCommand = '';
+        try {
+          const args = JSON.parse(msg.tool.input);
+          if (args && typeof args.command === 'string' && args.command.trim()) {
+            inlineCommand = args.command;
+          }
+        } catch (err) { /* clipped or non-JSON input */ }
+        if (inlineCommand) {
+          const cmd = document.createElement('pre');
+          cmd.className = 'conv-msg__pre conv-msg__cmd';
+          cmd.textContent = inlineCommand;
+          el.appendChild(cmd);
+        } else {
+          const det = document.createElement('details');
+          det.className = 'conv-msg__args';
+          const sum = document.createElement('summary');
+          sum.textContent = 'Raw arguments';
+          det.appendChild(sum);
+          const pre = document.createElement('pre');
+          pre.className = 'conv-msg__pre';
+          pre.textContent = msg.tool.input;
+          det.appendChild(pre);
+          el.appendChild(det);
+        }
+      }
       if (msg.tool.output) {
         const pre = document.createElement('pre');
         pre.className = 'conv-msg__pre';

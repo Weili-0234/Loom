@@ -1967,6 +1967,19 @@ label { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--text-
   background: transparent;
   border: 1.5px solid var(--accent);
 }
+/* The tool call itself, shown before its output. */
+.conv-msg__cmd {
+  border-left: 3px solid var(--accent);
+  opacity: 0.92;
+}
+.conv-msg__args { margin: 4px 0; }
+.conv-msg__args > summary {
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  user-select: none;
+}
+.conv-msg__args > summary:hover { color: var(--text); }
 @keyframes subagent-pulse { 50% { opacity: 0.3; } }
 .conv-msg__subagent-link {
   display: inline-block;
