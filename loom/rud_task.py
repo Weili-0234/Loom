@@ -1384,14 +1384,22 @@ def _list_claude_session_files(cwd: Path) -> list[Path]:
     """All ``<uuid>.jsonl`` session files for *cwd*, oldest first.
 
     Claude Code writes the parent transcript next to sidechain / subagent
-    transcripts (same directory, or ``subagents/`` / ``agents/``).
+    transcripts. Older versions used a flat ``subagents/`` / ``agents/``
+    directory beside the parent files; current versions nest them under a
+    per-session directory (``<session-uuid>/subagents/agent-<id>.jsonl``).
     """
     d = claude_project_dir(cwd)
     if not d.is_dir():
         return []
     seen: set[Path] = set()
     files: list[Path] = []
-    for pattern in ("*.jsonl", "subagents/*.jsonl", "agents/*.jsonl"):
+    for pattern in (
+        "*.jsonl",
+        "subagents/*.jsonl",
+        "agents/*.jsonl",
+        "*/subagents/*.jsonl",
+        "*/agents/*.jsonl",
+    ):
         for path in d.glob(pattern):
             if path.is_file() and path.suffix == ".jsonl" and path not in seen:
                 seen.add(path)
@@ -1459,6 +1467,18 @@ def inspect_claude_session(path: Path) -> dict[str, Any]:
         "tool_use_id": "",
         "task_agent_ids": [],
     }
+    # In the nested layout the directory the ``subagents/`` folder sits in is
+    # named after the parent session — a link the transcript rows themselves
+    # do not always carry.
+    if path.parent.name in ("subagents", "agents"):
+        info["sidechain"] = True
+        container = path.parent.parent.name
+        if re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+            r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            container,
+        ):
+            info["parent_id"] = container
     # Subagent transcripts ship a sibling ``agent-<id>.meta.json`` written at
     # spawn time: the Task tool_use id that launched the agent, its type, and
     # the prompt description — available even before the transcript has rows,

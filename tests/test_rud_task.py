@@ -1028,3 +1028,40 @@ def test_inspect_claude_session_without_meta_json_keeps_defaults(tmp_path: Path)
     info = inspect_claude_session(transcript)
     assert info["sidechain"] is False
     assert info["tool_use_id"] == ""
+
+
+def test_inspect_claude_session_derives_parent_from_nested_path(tmp_path: Path) -> None:
+    session_dir = tmp_path / "3f2c8a1e-9b4d-4c6a-8e21-0d5f7b9c1a2e" / "subagents"
+    session_dir.mkdir(parents=True)
+    transcript = session_dir / "agent-a0ab7cbeb5d0704f8.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "isSidechain": True,
+                "agentId": "a0ab7cbeb5d0704f8",
+                "message": {"content": [{"type": "text", "text": "working"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    info = inspect_claude_session(transcript)
+    assert info["sidechain"] is True
+    assert info["parent_id"] == "3f2c8a1e-9b4d-4c6a-8e21-0d5f7b9c1a2e"
+
+
+def test_list_claude_session_files_finds_nested_subagents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "encoded-project"
+    nested = project_dir / "3f2c8a1e-9b4d-4c6a-8e21-0d5f7b9c1a2e" / "subagents"
+    nested.mkdir(parents=True)
+    parent_file = project_dir / "3f2c8a1e-9b4d-4c6a-8e21-0d5f7b9c1a2e.jsonl"
+    parent_file.write_text("{}\n", encoding="utf-8")
+    child_file = nested / "agent-a0ab7cbeb5d0704f8.jsonl"
+    child_file.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(rud_task, "claude_project_dir", lambda cwd: project_dir)
+    files = rud_task._list_claude_session_files(tmp_path)
+    assert parent_file in files
+    assert child_file in files
