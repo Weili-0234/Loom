@@ -843,7 +843,7 @@ def _conversation_transcript_path(
     return None
 
 
-def _transcript_tail_text(path_str: str, limit: int = 262144) -> str:
+def _transcript_tail_text(path_str: str, limit: int = 2 * 1024 * 1024) -> str:
     """The raw tail of a transcript, for cheap "has this text landed yet"
     checks — a delivered message appears JSON-escaped in the child's file."""
     try:
@@ -5704,8 +5704,13 @@ def make_handler(
                         (status_by_key[k] for k in child_keys if k in status_by_key), ""
                     )
                     fresh = now - float(child.get("mtime") or 0.0) < 180
-                    if status in ("completed", "error", "canceled"):
+                    # A background-spawned agent's Task tool resolves at
+                    # launch, so "completed" only counts once the child has
+                    # actually stopped writing its transcript.
+                    if status in ("error", "canceled"):
                         child["status"] = status
+                    elif status == "completed" and not fresh:
+                        child["status"] = "completed"
                     elif fresh:
                         child["status"] = "working"
                     else:
