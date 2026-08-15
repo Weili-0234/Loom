@@ -5682,6 +5682,7 @@ def make_handler(
                                     "to": str(tool.get("message_to") or ""),
                                     "text": str(tool.get("message_text") or ""),
                                     "created_at": entry.get("created_at"),
+                                    "output": str(tool.get("output") or ""),
                                 }
                             )
                             continue
@@ -5730,17 +5731,33 @@ def make_handler(
                     if addressed:
                         tail = _transcript_tail_text(str(child.get("path") or ""))
                         for send in addressed:
+                            result = send.get("output") or ""
+                            # The send tool's own verdict first: a failed send
+                            # was never queued (the parent saw the error and
+                            # retried), and a send that resumed the stopped
+                            # child was delivered with that resume.
+                            if '"success":false' in result.replace(" ", ""):
+                                continue
+                            if "with your message" in result:
+                                continue
                             fragment = send["text"][:80]
                             if not fragment:
                                 continue
-                            encoded = json.dumps(fragment)[1:-1]
-                            if encoded and encoded not in tail:
-                                queued.append(
-                                    {
-                                        "text": send["text"][:400],
-                                        "created_at": send.get("created_at"),
-                                    }
-                                )
+                            # The child file is JSON with unescaped UTF-8, so
+                            # match both encodings — ensure_ascii would turn
+                            # an em-dash into \\u2014 and never match.
+                            variants = {
+                                json.dumps(fragment)[1:-1],
+                                json.dumps(fragment, ensure_ascii=False)[1:-1],
+                            }
+                            if any(v and v in tail for v in variants):
+                                continue
+                            queued.append(
+                                {
+                                    "text": send["text"][:400],
+                                    "created_at": send.get("created_at"),
+                                }
+                            )
                     child["queued"] = len(queued)
                     child["queued_messages"] = queued
             parents.sort(key=lambda x: x.get("mtime", 0.0), reverse=True)
