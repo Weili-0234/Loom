@@ -878,6 +878,25 @@ def _conversation_transcript_path(
     return None
 
 
+_VISIBLE_SUBAGENT_CAP = 20
+
+
+def _visible_subagents(kids: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The subagents worth a row in the chat's sidebar list.
+
+    A long-lived task accumulates dozens of finished monitor sessions;
+    listing them all buries the two that matter and bloats every poll.
+    Anything alive or holding queued mail always shows; history fills the
+    remainder, freshest first. Per-step trajectory links are unaffected —
+    they are resolved from the full list before this cut.
+    """
+    active = [
+        k for k in kids if k.get("status") == "working" or k.get("queued")
+    ]
+    rest = [k for k in kids if k not in active]
+    return (active + rest)[:_VISIBLE_SUBAGENT_CAP]
+
+
 def _transcript_tail_text(path_str: str, limit: int = 2 * 1024 * 1024) -> str:
     """The raw tail of a transcript, for cheap "has this text landed yet"
     checks — a delivered message appears JSON-escaped in the child's file."""
@@ -6792,7 +6811,12 @@ def make_handler(
                         "title": selected_session.get("title") or "",
                         "sidechain": bool(selected_session.get("sidechain")),
                         "agent_type": selected_session.get("agent_type") or "",
-                        "subagents": selected_session.get("subagents") or [],
+                        "subagents": _visible_subagents(
+                            selected_session.get("subagents") or []
+                        ),
+                        "subagents_total": len(
+                            selected_session.get("subagents") or []
+                        ),
                         "updated_at": int(time.time() * 1000)
                         if terminal_appended
                         else updated_at,

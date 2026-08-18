@@ -1409,6 +1409,13 @@ def _list_claude_session_files(cwd: Path) -> list[Path]:
 
 
 _CLAUDE_SESSION_SCAN_BYTES = 256 * 1024
+
+# inspect_claude_session is on the sessions API's hot path and a long-lived
+# task accumulates dozens of subagent transcripts; without a cache every
+# 1.5s poll re-reads 256 KB from each of them. Keyed by (mtime_ns, size), so
+# a growing transcript re-scans and a finished one is read once.
+_INSPECT_CACHE: dict[str, tuple[int, int, dict[str, Any]]] = {}
+_INSPECT_CACHE_MAX = 512
 _CLAUDE_TITLE_KEYS = ("customTitle", "aiTitle", "lastPrompt", "summary")
 
 
@@ -1458,6 +1465,15 @@ def inspect_claude_session(path: Path) -> dict[str, Any]:
     Reads only the first ~256 KB. Missing files yield empty metadata rather
     than raising, so the sessions API stays up if a transcript is mid-write.
     """
+    try:
+        stat_info = path.stat()
+        cache_key = str(path)
+        cached = _INSPECT_CACHE.get(cache_key)
+        if cached and cached[0] == stat_info.st_mtime_ns and cached[1] == stat_info.st_size:
+            return dict(cached[2])
+    except OSError:
+        stat_info = None
+        cache_key = ""
     info: dict[str, Any] = {
         "sidechain": False,
         "parent_id": "",
@@ -1567,6 +1583,14 @@ def inspect_claude_session(path: Path) -> dict[str, Any]:
         info["title"] = title
     except OSError:
         return info
+    if cache_key and stat_info is not None:
+        if len(_INSPECT_CACHE) >= _INSPECT_CACHE_MAX:
+            _INSPECT_CACHE.pop(next(iter(_INSPECT_CACHE)), None)
+        _INSPECT_CACHE[cache_key] = (
+            stat_info.st_mtime_ns,
+            stat_info.st_size,
+            dict(info),
+        )
     return info
 
 
